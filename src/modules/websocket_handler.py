@@ -51,10 +51,10 @@ class WebSocketHandler:
         """Sends messages from the outgoing queue to the client."""
         try:
             while True:
-                message = await self.outgoing_events_queue.get()
+                message = self.outgoing_events_queue.get()
                 
                 if websocket.open:  # Ensure the socket is still open
-                    await websocket.send(message)
+                    asyncio.run_coroutine_threadsafe(websocket.send(message), asyncio.get_event_loop())
                     self.log(f"Sent: {message}")
                 
                 self.outgoing_events_queue.task_done()
@@ -72,8 +72,9 @@ class WebSocketHandler:
 
 
     def send_event(self, event):
-        """Queues an event message to be sent to all connected clients."""
-        asyncio.run_coroutine_threadsafe(self.outgoing_events_queue.put(event), asyncio.get_event_loop())
+        """Enqueues an event message to be sent to all connected clients."""
+        self.outgoing_events_queue.put(event)  # Just put the event in the queue (blocking call)
+
 
 
     def run(self):
