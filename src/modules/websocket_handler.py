@@ -5,50 +5,59 @@ import json
 from datetime import datetime
 
 class WebSocketHandler:
-    def __init__(self, event_queue, shutdown_event, host="localhost", port=443):
+    def __init__(self, incoming_events_queue, outgoing_events_queue, shutdown_event, host="localhost", port=443):
         """Initialize WebSocket server settings."""
         self.host = host
         self.port = port
-        self.event_queue = event_queue 
-        self.shutdown_event = shutdown_event
         self.server_thread = None
         self.connected_clients = set()
-        self.outgoing_messages = asyncio.Queue()
+        self.shutdown_event = shutdown_event
+        self.incoming_events_queue = incoming_events_queue
+        self.outgoing_events_queue = outgoing_events_queue
 
 
     async def handle_connection(self, websocket, path):
-        """Handles incoming WebSocket messages from clients."""
+        """Handles a new WebSocket connection."""
         self.log(f"Client connected: {websocket.remote_address}")
         self.connected_clients.add(websocket)
-        
-        send_task = asyncio.create_task(self.send_messages(websocket))
 
+        send_task = asyncio.create_task(self.send_messages(websocket))
+        receive_task = asyncio.create_task(self.receive_messages(websocket))
+
+        try:
+            await asyncio.gather(send_task, receive_task)
+            
+        except websockets.exceptions.ConnectionClosed:
+            self.log(f"Client disconnected: {websocket.remote_address}")
+            
+        finally:
+            self.connected_clients.remove(websocket)
+            send_task.cancel()
+            receive_task.cancel()
+
+
+    async def receive_messages(self, websocket):
+        """Receives messages from the client and places them in the incoming queue."""
         try:
             async for message in websocket:
                 event = json.loads(message)
                 self.log(f"Received: {event}")
-
-                # Put the event into the processing queue
-                self.event_queue.put(event)
-
+                self.incoming_events_queue.put(event)
+                
         except websockets.exceptions.ConnectionClosed:
-            self.log(f"Client disconnected: {websocket.remote_address}")
+            pass  # Client disconnected, exit the function
 
-        finally:
-            self.connected_clients.remove(websocket)
-            send_task.cancel()
-    
-    
     async def send_messages(self, websocket):
-        """Sends messages from the outgoing queue to a connected client."""
+        """Sends messages from the outgoing queue to the client."""
         try:
             while True:
-                message = await self.outgoing_messages.get()
+                message = await self.outgoing_events_queue.get()
                 
                 if websocket.open:  # Ensure the socket is still open
                     await websocket.send(message)
-                    
-                self.outgoing_messages.task_done()
+                    self.log(f"Sent: {message}")
+                
+                self.outgoing_events_queue.task_done()
                 
         except asyncio.CancelledError:
             pass  # Task was cancelled (client disconnected)
@@ -60,11 +69,11 @@ class WebSocketHandler:
         self.log(f"Server started on ws://{self.host}:{self.port}")
 
         await self.server.wait_closed()
-    
-    
+
+
     def send_event(self, event):
         """Queues an event message to be sent to all connected clients."""
-        asyncio.run_coroutine_threadsafe(self.outgoing_messages.put(event), asyncio.get_event_loop())
+        asyncio.run_coroutine_threadsafe(self.outgoing_events_queue.put(event), asyncio.get_event_loop())
 
 
     def run(self):

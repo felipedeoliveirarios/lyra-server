@@ -9,13 +9,16 @@ from modules.event_processor import EventProcessor
 
 class Main:
     def __init__(self):
-        """Initialize the event queue, shutdown event, and necessary components."""
-        self.event_queue = queue.Queue()
+        """Initialize the external event queue, internal event queue, shutdown 
+        event, and necessary components."""
+        
+        self.incoming_events_queue = queue.Queue()
+        self.outgoing_events_queue = queue.Queue()
         self.shutdown_event = threading.Event()
 
         # Initialize components
-        self.websocket_server = WebSocketHandler(self.event_queue, self.shutdown_event)
-        self.event_processor = EventProcessor(self.event_queue, self.shutdown_event)
+        self.websocket_server = WebSocketHandler(self.incoming_events_queue, self.outgoing_events_queue, self.shutdown_event)
+        self.event_processor = EventProcessor(self.incoming_events_queue, self.shutdown_event)
 
     def start(self):
         """Starts all components."""
