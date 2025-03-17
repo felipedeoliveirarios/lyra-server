@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 class WebSocketHandler:
-    def __init__(self, incoming_events_queue, outgoing_events_queue, shutdown_event, host="localhost", port=443):
+    def __init__(self, incoming_events_queue: asyncio.Queue, outgoing_events_queue: asyncio.Queue, shutdown_event, host="localhost", port=5000):
         """Initialize WebSocket server settings."""
         self.host = host
         self.port = port
@@ -16,7 +16,7 @@ class WebSocketHandler:
         self.outgoing_events_queue = outgoing_events_queue
 
 
-    async def handle_connection(self, websocket, path):
+    async def handle_connection(self, websocket):
         """Handles a new WebSocket connection."""
         self.log(f"Client connected: {websocket.remote_address}")
         self.connected_clients.add(websocket)
@@ -34,6 +34,7 @@ class WebSocketHandler:
             self.connected_clients.remove(websocket)
             send_task.cancel()
             receive_task.cancel()
+            self.log(f"Connection closed: {websocket.remote_address}")
 
 
     async def receive_messages(self, websocket):
@@ -42,7 +43,8 @@ class WebSocketHandler:
             async for message in websocket:
                 event = json.loads(message)
                 self.log(f"Received: {event}")
-                self.incoming_events_queue.put(event)
+                await self.incoming_events_queue.put(event)
+                self.log("Event added to queue.")
                 
         except websockets.exceptions.ConnectionClosed:
             pass  # Client disconnected, exit the function
@@ -51,13 +53,16 @@ class WebSocketHandler:
         """Sends messages from the outgoing queue to the client."""
         try:
             while True:
-                message = self.outgoing_events_queue.get()
+                message = await self.outgoing_events_queue.get()
                 
-                if websocket.open:  # Ensure the socket is still open
-                    asyncio.run_coroutine_threadsafe(websocket.send(message), asyncio.get_event_loop())
+                try:
+                    await websocket.send(str(message))
                     self.log(f"Sent: {message}")
                 
-                self.outgoing_events_queue.task_done()
+                except websockets.exceptions.ConnectionClosed:
+                    # Connection is closed, exit the loop
+                    self.log(f"WebSocket connection closed while sending message.")
+                    break
                 
         except asyncio.CancelledError:
             pass  # Task was cancelled (client disconnected)
@@ -69,6 +74,7 @@ class WebSocketHandler:
         self.log(f"Server started on ws://{self.host}:{self.port}")
 
         await self.server.wait_closed()
+        self.log("Server stopped.")
 
 
     def send_event(self, event):
@@ -81,13 +87,20 @@ class WebSocketHandler:
         """Runs the WebSocket server in an event loop."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.start_server())
-        loop.run_forever()
+
+        server_task = loop.create_task(self.start_server())
+
+        while not self.shutdown_event.is_set():
+            loop.run_until_complete(asyncio.sleep(0.1))  # Allow loop to check shutdown
+
+        server_task.cancel()  # Cancel the server task before exiting
+        loop.stop()
+        loop.close()
 
 
     def start(self):
         """Starts WebSocket server in a separate thread."""
-        self.log("Starting server thread.")
+        self.log("Starting server thread...")
         
         self.server_thread = threading.Thread(target=self.run, daemon=True)
         self.server_thread.start()
@@ -96,10 +109,15 @@ class WebSocketHandler:
     def stop(self):
         """Stops the WebSocket server and closes all connections."""
         self.log("Stopping server.")
-        
+
         for client in self.connected_clients.copy():
             asyncio.run_coroutine_threadsafe(client.close(), asyncio.get_event_loop())
 
+        if self.server:
+            self.server.close()  # Stop accepting new connections
+            asyncio.run_coroutine_threadsafe(self.server.wait_closed(), asyncio.get_event_loop())
+
+        self.shutdown_event.set()  # Signal shutdown for other components
 
     def join(self):
         """Waits for the WebSocket server thread to finish."""
