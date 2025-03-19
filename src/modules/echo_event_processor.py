@@ -59,7 +59,7 @@ class EchoEventProcessor:
     def stop(self):
         """Signals the processor to exit and waits for it to finish."""
         self.log("Sending stop event to worker...")
-        self.incoming_event_queue.put(None)
+        self.incoming_event_queue.put_nowait(None)
 
         if self.event_processor_thread:
             self.event_processor_thread.join()
