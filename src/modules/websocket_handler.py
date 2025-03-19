@@ -18,7 +18,7 @@ class WebSocketHandler:
 
     async def handle_connection(self, websocket):
         """Handles a new WebSocket connection."""
-        self.log(f"Client connected: {websocket.remote_address}")
+        self.log(f"[handle_connection] Client connected: {websocket.remote_address}")
         self.connected_clients.add(websocket)
 
         send_task = asyncio.create_task(self.send_messages(websocket))
@@ -28,13 +28,13 @@ class WebSocketHandler:
             await asyncio.gather(send_task, receive_task)
             
         except websockets.exceptions.ConnectionClosed:
-            self.log(f"Client disconnected: {websocket.remote_address}")
+            self.log(f"[handle_connection] Client disconnected: {websocket.remote_address}")
             
         finally:
             self.connected_clients.remove(websocket)
             send_task.cancel()
             receive_task.cancel()
-            self.log(f"Connection closed: {websocket.remote_address}")
+            self.log(f"[handle_connection] Connection closed: {websocket.remote_address}")
 
 
     async def receive_messages(self, websocket):
@@ -42,31 +42,45 @@ class WebSocketHandler:
         try:
             async for message in websocket:
                 event = json.loads(message)
-                self.log(f"Received: {event}")
+                self.log(f"[receive_messages] Received: {event}")
                 await self.incoming_events_queue.put(event)
-                self.log("Event added to queue.")
-                
-        except websockets.exceptions.ConnectionClosed:
-            pass  # Client disconnected, exit the function
+                self.log("[receive_messages] Event added to received events queue.")
+
+            self.log("[receive_messages] Message reception loop ended. Connection likely closed by client.")
+                    
+        except websockets.exceptions.ConnectionClosed as e:
+            self.log(f"[receive_messages] Client disconnected unexpectedly: {e}")
+
+        except Exception as e:
+            self.log(f"[receive_messages] Unexpected error in receive_messages: {e}")
 
     async def send_messages(self, websocket):
-        """Sends messages from the outgoing queue to the client."""
+        """Continuously sends messages from the outgoing queue to the client."""
         try:
-            while True:
-                message = await self.outgoing_events_queue.get()
+            while not self.shutdown_event.is_set():
+                if not self.outgoing_events_queue.empty():
+                    message = await self.outgoing_events_queue.get()
+                    
+                    if message is None:
+                        self.log("[send_messages] Received stop signal. Closing send_messages loop.")
+                        break
+                    
+                    self.log(f"[send_messages] Detected message in the output queue: {message}")
+                    
+                    try:
+                        await websocket.send(json.dumps(message))  # Ensure JSON format
+                        self.log(f"[send_messages] Data Sent: {message}")
+                    
+                    except websockets.exceptions.ConnectionClosed:
+                        self.log("[send_messages] WebSocket connection closed while sending message.")
+                        break
                 
-                try:
-                    await websocket.send(str(message))
-                    self.log(f"Sent: {message}")
-                
-                except websockets.exceptions.ConnectionClosed:
-                    # Connection is closed, exit the loop
-                    self.log(f"WebSocket connection closed while sending message.")
-                    break
-                
+                await asyncio.sleep(0.1)  # Sleep briefly to prevent high CPU usage
+
+            self.log("[send_messages] Message transmission loop ended.")
+                    
         except asyncio.CancelledError:
             pass  # Task was cancelled (client disconnected)
-
 
     async def start_server(self):
         """Creates and starts the WebSocket server."""
@@ -75,27 +89,24 @@ class WebSocketHandler:
 
         await self.server.wait_closed()
         self.log("Server stopped.")
-
-
-    def send_event(self, event):
-        """Enqueues an event message to be sent to all connected clients."""
-        self.outgoing_events_queue.put(event)  # Just put the event in the queue (blocking call)
-
-
+        
 
     def run(self):
         """Runs the WebSocket server in an event loop."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        
+        try:
+            loop = asyncio.get_running_loop()
+
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
         server_task = loop.create_task(self.start_server())
 
         while not self.shutdown_event.is_set():
-            loop.run_until_complete(asyncio.sleep(0.1))  # Allow loop to check shutdown
+            loop.run_forever()
 
         server_task.cancel()  # Cancel the server task before exiting
-        loop.stop()
-        loop.close()
 
 
     def start(self):

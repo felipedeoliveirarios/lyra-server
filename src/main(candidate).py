@@ -5,7 +5,7 @@ import sys
 
 from datetime import datetime
 from modules.websocket_handler import WebSocketHandler
-from modules.dummy_event_processor import EventProcessor
+from modules.echo_event_processor import EchoEventProcessor
 
 class Main:
     def __init__(self):
@@ -18,7 +18,7 @@ class Main:
 
         # Initialize components
         self.websocket_server = WebSocketHandler(self.incoming_events_queue, self.outgoing_events_queue, self.shutdown_event)
-        self.event_processor = EventProcessor(self.incoming_events_queue, self.outgoing_events_queue, self.shutdown_event)
+        self.event_processor = EchoEventProcessor(self.incoming_events_queue, self.outgoing_events_queue, self.shutdown_event)
 
     def start(self):
         """Starts all components."""
